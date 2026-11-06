@@ -13,6 +13,7 @@ import { session, useSession } from "@/store/session";
 import { DemoBadge, DemoNotice } from "@/components/brand/DemoBadge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { getAIReply, getAIStatus } from "@/services/ai";
 
 export const Route = createFileRoute("/concierge")({
   head: () => ({
@@ -58,6 +59,7 @@ function ConciergePage() {
   const [typing, setTyping] = useState(false);
   const [input, setInput] = useState("");
   const [done, setDone] = useState<string[]>([]);
+  const [aiConfigured, setAIConfigured] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -65,6 +67,9 @@ function ConciergePage() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [messages, typing]);
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
+  useEffect(() => {
+    void getAIStatus().then((status) => setAIConfigured(status.configured));
+  }, []);
 
   function reply(build: () => Msg) {
     setTyping(true);
@@ -97,12 +102,44 @@ function ConciergePage() {
     const found = matchScenario(text, scenarios);
     if (found) return startScenario(found, text);
     setMessages((m) => [...m, { id: nid(), role: "guest", text }]);
-    reply(() => ({
-      id: nid(),
-      role: "concierge",
-      text: "В демо-версии я понимаю только подготовленные сценарии. Выберите одну из тем ниже — и я продолжу.",
-      intro: true,
-    }));
+    if (!aiConfigured) {
+      reply(() => ({
+        id: nid(),
+        role: "concierge",
+        text: "ИИ-сервис пока не настроен. Подключите OPENAI_API_KEY, и я смогу отвечать на свободные запросы. Пока выберите один из подготовленных сценариев.",
+        intro: true,
+      }));
+      return;
+    }
+
+    setTyping(true);
+    void getAIReply({
+      data: {
+        messages: [
+          {
+            role: "system",
+            content: `Ты — AI-консьерж экосистемы PARMESUN. Отвечай кратко и по-русски, предлагай релевантные направления: гастрономия, подарки, wellness, досуг, мероприятия и клубная программа. Уровень гостя: ${tier.name}, баланс: ${s.points}. Не выдавай себя за сервис бронирования и не утверждай, что бронь уже оформлена.`,
+          },
+          ...messages
+            .filter((message) => message.role === "guest" || message.role === "concierge")
+            .slice(-10)
+            .map((message) => ({ role: message.role === "guest" ? "user" as const : "assistant" as const, content: message.text })),
+          { role: "user" as const, content: text },
+        ],
+      },
+    }).then((result) => {
+      setTyping(false);
+      if (!result.ok) {
+        setMessages((m) => [...m, {
+          id: nid(),
+          role: "concierge",
+          text: `Не удалось получить ответ ИИ: ${result.message}`,
+          intro: true,
+        }]);
+        return;
+      }
+      setMessages((m) => [...m, { id: nid(), role: "concierge", text: result.message, intro: true }]);
+    });
   }
 
   function choose(scenarioId: string, label: string, nextId: string) {
@@ -137,8 +174,9 @@ function ConciergePage() {
   return (
     <div className="container-editorial pt-10 md:pt-16">
       <DemoNotice>
-        Нейросеть не подключена: консьерж отвечает по заранее подготовленным сценариям. Брони и заявки попадают только
-        в демо-кабинет.
+        {aiConfigured
+          ? "ИИ подключён. Ответы могут быть неполными, а бронь и заявки остаются демо-действиями."
+          : "ИИ пока не подключён: консьерж отвечает по сценариям либо сообщает о необходимости настройки ключа."}
       </DemoNotice>
 
       <section className="mt-12 flex flex-col justify-between gap-6 md:flex-row md:items-end">
